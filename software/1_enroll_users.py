@@ -61,8 +61,8 @@ for person_name in os.listdir(DATASET_PATH):
         print(f"[+] Saved fingerprint for {person_name} ({img_name})")
 
 # 4. Save the Database to disk
-faiss.write_index(index, "vector_database.index")
-with open("user_mapping.pkl", "wb") as f:
+faiss.write_index(index, "data/vector_database.index")
+with open("data/user_mapping.pkl", "wb") as f:
     pickle.dump(user_mapping, f)
 
 print(f"\n✅ Enterprise Database Built! Saved {current_id} faces.")

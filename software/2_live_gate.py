@@ -64,11 +64,11 @@ print("[INFO] Chargement du modele InsightFace buffalo_l...")
 app = FaceAnalysis(name='buffalo_l')
 app.prepare(ctx_id=0, det_size=(640, 640)) 
 
-index = faiss.read_index("vector_database.index")
-with open("user_mapping.pkl", "rb") as f:
+index = faiss.read_index("data/vector_database.index")
+with open("data/user_mapping.pkl", "rb") as f:
     user_mapping = pickle.load(f)
 
-FAS_MODEL_PATH = "fas_model.onnx"
+FAS_MODEL_PATH = "models/fas_model.onnx"
 fas_session = None
 
 if os.path.exists(FAS_MODEL_PATH):
