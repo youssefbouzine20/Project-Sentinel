@@ -21,21 +21,28 @@ void setup() {
 }
 
 void loop() {
-  //is_ready() checks if The HX711 picked out anything yet
-  if (scale.is_ready()){
-    float weight = scale.get_units(5);
-    //Example
-    if (weight > 2){
-      Serial.print("Piggy Backing Detected!!");
-      //Buzzer goes Off
-      //Red LED goes Off
+  // Wait for the AI Authorization before checking weight (NEW INTEGRATION)
+  if (Serial.available() > 0) {
+    char command = Serial.read();
+    
+    if (command == '1') {
+      //is_ready() checks if The HX711 picked out anything yet
+      if (scale.is_ready()){
+        float weight = scale.get_units(5);
+        //Example
+        if (weight > 2){
+          Serial.print("Piggy Backing Detected!!");
+          //Buzzer goes Off
+          //Red LED goes Off
+        }
+        else {
+          Serial.println("Access Granted");
+          //Green LED ON
+        }
+      }
+      else {
+        Serial.println("HX711 not found or not ready.");
+      }
     }
-    else {
-      Serial.println("Access Granted");
-      //Green LED ON
-    }
-  }
-  else {
-    Serial.println("HX711 not found or not ready.");
   }
 }
