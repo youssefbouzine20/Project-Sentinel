@@ -5,7 +5,8 @@ import pickle
 import threading
 import time
 import os
-import psycopg2
+import sqlite3
+import requests
 import onnxruntime as ort
 import multiprocessing as mp
 from insightface.app import FaceAnalysis
@@ -14,6 +15,13 @@ from insightface.app import FaceAnalysis
 # 0. DYNAMIC PATHS & CONFIGURATION
 # ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ── ESP32-CAM Endpoints ──────────────────────────────────────────────────────
+ESP32_STREAM_URL = "http://192.168.43.178:81/stream"
+ESP32_GRANT_URL  = "http://192.168.43.178/access_granted"
+ESP32_DENY_URL   = "http://192.168.43.178/access_denied"
+ESP32_HEALTH_URL = "http://192.168.43.178/health"
+ESP32_TIMEOUT    = 1.5   # seconds — non-blocking, gate should not wait
 
 BASE_RECOGNITION_THRESHOLD = 0.55
 FAS_REAL_THRESHOLD         = 0.40
@@ -37,10 +45,20 @@ class BoxSmoother:
         return self.smooth_bbox.astype(int)
 
 class CameraStream:
-    """Non-blocking MJPEG/Webcam capture using a background thread."""
+    """Non-blocking webcam capture using a background thread."""
     def __init__(self, src):
-        self.cap = cv2.VideoCapture(src)
-        self.ret, self.frame = self.cap.read()
+        if isinstance(src, int):
+            self.cap = cv2.VideoCapture(src, cv2.CAP_DSHOW)  # Windows DirectShow
+        else:
+            self.cap = cv2.VideoCapture(src)
+        self.ret, self.frame = False, None
+        for _ in range(30):  # warm-up retries
+            self.ret, self.frame = self.cap.read()
+            if self.ret and self.frame is not None:
+                break
+            time.sleep(0.1)
+        if not self.ret:
+            print("[ERROR] Cannot open camera. Check that nothing else is using it.")
         self._lock = threading.Lock()
         self._stop = threading.Event()
         threading.Thread(target=self._reader, daemon=True).start()
@@ -53,7 +71,9 @@ class CameraStream:
 
     def read(self):
         with self._lock:
-            return self.ret, self.frame.copy() if self.ret else (False, None)
+            if self.ret and self.frame is not None:
+                return True, self.frame.copy()
+            return False, None
 
     def release(self):
         self._stop.set()
@@ -89,36 +109,58 @@ def stable_softmax(x):
 # 2. AI WORKER PROCESS (ISOLATED)
 # ==========================================
 def ai_worker(frame_queue, result_queue):
-    import serial
-    
-    print("[INFO] Worker: Initialisation de la connexion PostgreSQL...")
+    print("[INFO] Worker: Connecting to SQLite tickets.db...")
     last_log_time = {}
     LOG_COOLDOWN  = 5.0
 
+    # ── SQLite (shared with server.py) ───────────────────────────────────────
+    _db_path = os.path.join(BASE_DIR, "data", "tickets.db")
     try:
-        db_conn = psycopg2.connect(dbname="sentinel_logs_db", user="postgres", password="youssef", host="127.0.0.1", port="5432")
-        db_conn.autocommit = True
-        db_cursor = db_conn.cursor()
-        print("[INFO] Worker: Connexion PostgreSQL etablie.")
-    except psycopg2.Error as e:
-        print(f"[ERREUR] DB: {e}")
-        db_cursor = None
+        db_conn = sqlite3.connect(_db_path, check_same_thread=False)
+        db_conn.row_factory = sqlite3.Row
+        db_conn.execute("""
+            CREATE TABLE IF NOT EXISTS access_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                person_name TEXT,
+                status TEXT,
+                liveness_score REAL,
+                confidence_score REAL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        db_conn.commit()
+        print("[INFO] Worker: SQLite connected.")
+    except Exception as e:
+        print(f"[ERROR] SQLite: {e}")
         db_conn = None
 
-    def log_to_postgres_local(name, status, liveness, confidence):
-        if not db_cursor: return
+    def log_to_sqlite(name, status, liveness, confidence):
+        if not db_conn: return
         current_time = time.time()
         if name in last_log_time and (current_time - last_log_time[name]) < LOG_COOLDOWN: return
         last_log_time[name] = current_time
         try:
-            db_cursor.execute("INSERT INTO access_logs (person_name, status, liveness_score, confidence_score) VALUES (%s, %s, %s, %s)", (name, status, float(liveness), float(confidence)))
-        except psycopg2.Error:
+            db_conn.execute(
+                "INSERT INTO access_logs (person_name, status, liveness_score, confidence_score) VALUES (?, ?, ?, ?)",
+                (name, status, float(liveness), float(confidence))
+            )
+            db_conn.commit()
+        except Exception:
             pass
 
+    def signal_esp32(url):
+        """Fire-and-forget HTTP signal to ESP32. Non-blocking."""
+        try:
+            requests.get(url, timeout=ESP32_TIMEOUT)
+        except Exception:
+            pass  # Gate signal failure must never crash the recognition loop
+
+    # ── Check ESP32 health at startup ────────────────────────────────────────
     try:
-        esp32 = serial.Serial('COM3', 9600, timeout=1)
+        r = requests.get(ESP32_HEALTH_URL, timeout=2)
+        print(f"[INFO] ESP32 health: {r.text.strip()}")
     except Exception:
-        esp32 = None
+        print("[WARNING] ESP32 not reachable — gate signals will be skipped.")
 
     print("[INFO] Worker: Initialisation des modeles AI...")
     app = FaceAnalysis(name='buffalo_l', allowed_modules=['detection', 'recognition', 'landmark_3d_68'])
@@ -253,7 +295,7 @@ def ai_worker(frame_queue, result_queue):
 
             if not is_real_face:
                 color, status = (0, 165, 255), f"SPOOF DETECTED ({int(liveness_score * 100)}%)"
-                log_to_postgres_local("IMPOSTER", "SPOOF_ATTEMPT", liveness_score, confidence)
+                log_to_sqlite("IMPOSTER", "SPOOF_ATTEMPT", liveness_score, confidence)
             elif eye_dist < EYE_DIST_MIN:
                 color, status = (50, 50, 255), "MOVE CLOSER"
             elif eye_dist > EYE_DIST_MAX:
@@ -263,13 +305,15 @@ def ai_worker(frame_queue, result_queue):
                     color, status = (255, 255, 0), f"BLINK TO VERIFY | {detected_name.upper()}"
                 else:
                     color, status = (0, 255, 100), f"GRANTED | {detected_name.upper()}"
-                    log_to_postgres_local(detected_name, "ACCESS_GRANTED", liveness_score, confidence)
+                    log_to_sqlite(detected_name, "ACCESS_GRANTED", liveness_score, confidence)
                     blink_state[detected_name] = False
-                    if esp32: esp32.write(b'1')
+                    # ── Signal ESP32 to open gate ────────────────────────────
+                    threading.Thread(target=signal_esp32, args=(ESP32_GRANT_URL,), daemon=True).start()
             else:
                 color, status = (50, 50, 255), "ACCESS DENIED"
                 blink_state[detected_name] = False
-                log_to_postgres_local("STRANGER", "ACCESS_DENIED", liveness_score, confidence)
+                log_to_sqlite("STRANGER", "ACCESS_DENIED", liveness_score, confidence)
+                threading.Thread(target=signal_esp32, args=(ESP32_DENY_URL,), daemon=True).start()
 
             new_detections.append({'bbox': bbox, 'status': status, 'color': color, 'confidence': confidence, 'liveness': liveness_score})
 
@@ -278,8 +322,7 @@ def ai_worker(frame_queue, result_queue):
             except Exception: pass
         result_queue.put(new_detections)
 
-    if db_cursor: db_cursor.close()
-    if db_conn: db_conn.close()
+    # Cleanup (tickets_conn is the correct variable name)
 
 # ==========================================
 # 3. MAIN EXECUTION GUARD
@@ -293,10 +336,9 @@ if __name__ == "__main__":
     worker_process.start()
     print("[INFO] Sentinel V2: AI worker process spawned.")
 
-    # FALLBACK TO 0 IF YOUR PHONE IP CAMERA DISCONNECTS
-    CAMERA_URL = "http://192.168.43.1:8080/video"
-    cap = CameraStream(CAMERA_URL)
-    print(f"[INFO] Pipeline operationnel sur {CAMERA_URL}. Appuyez sur 'q' pour fermer.")
+    print(f"[INFO] Connecting to ESP32-CAM stream: {ESP32_STREAM_URL}")
+    cap = CameraStream(ESP32_STREAM_URL)
+    print("[INFO] Pipeline ready. Press 'q' to quit.")
 
     detections_to_draw = []
 
@@ -306,9 +348,7 @@ if __name__ == "__main__":
             time.sleep(0.01)
             continue
 
-        # UNCOMMENTED: Restores proper proportions for phone cameras
-        frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-        frame = cv2.resize(frame, (450, 800))
+        frame = cv2.resize(frame, (640, 480))
 
         if frame_queue.full():
             try: frame_queue.get_nowait()
