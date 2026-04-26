@@ -1,0 +1,10 @@
+opencv-python
+numpy
+faiss-cpu
+insightface
+onnxruntime
+fastapi
+uvicorn
+pydantic
+requests
+pyserial
