@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sentinel V2 — Gate Scanner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg:        #040812;
+      --surface:   #0a1020;
+      --border:    #1a2540;
+      --green:     #00ff88;
+      --red:       #ff3355;
+      --amber:     #ffb830;
+      --blue:      #2979ff;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --mono:      'Share Tech Mono', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* ── Header ── */
+    header {
+      width: 100%;
+      background: rgba(10,16,32,0.95);
+      border-bottom: 1px solid var(--border);
+      padding: 14px 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .logo-icon {
+      width: 38px; height: 38px;
+      background: linear-gradient(135deg, #2979ff, #00ff88);
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px;
+    }
+    .logo-text { font-size: 18px; font-weight: 700; letter-spacing: 1px; }
+    .logo-sub  { font-size: 11px; color: var(--muted); font-family: var(--mono); letter-spacing: 2px; }
+    .header-badge {
+      display: flex; align-items: center; gap: 8px;
+      background: rgba(0,255,136,0.08);
+      border: 1px solid rgba(0,255,136,0.2);
+      border-radius: 99px;
+      padding: 6px 14px;
+      font-size: 12px;
+      color: var(--green);
+      font-family: var(--mono);
+    }
+    .pulse {
+      width: 8px; height: 8px;
+      background: var(--green);
+      border-radius: 50%;
+      animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%,100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.4; transform: scale(0.7); }
+    }
+
+    /* ── Main layout ── */
+    main {
+      width: 100%;
+      max-width: 1100px;
+      padding: 32px 24px;
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 24px;
+    }
+
+    /* ── Camera card ── */
+    .camera-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      overflow: hidden;
+      position: relative;
+    }
+    .camera-label {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      font-family: var(--mono);
+      color: var(--muted);
+      letter-spacing: 1px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .camera-wrap {
+      position: relative;
+      background: #000;
+      aspect-ratio: 4/3;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    #vid {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+
+    /* scan frame corners */
+    .scan-frame {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 200px; height: 200px;
+      pointer-events: none;
+    }
+    .corner {
+      position: absolute;
+      width: 28px; height: 28px;
+      border-color: var(--green);
+      border-style: solid;
+      opacity: 0.7;
+      transition: border-color 0.3s, opacity 0.3s;
+    }
+    .corner.tl { top:0; left:0;  border-width: 3px 0 0 3px; }
+    .corner.tr { top:0; right:0; border-width: 3px 3px 0 0; }
+    .corner.bl { bottom:0; left:0;  border-width: 0 0 3px 3px; }
+    .corner.br { bottom:0; right:0; border-width: 0 3px 3px 0; }
+
+    /* scan line animation */
+    .scan-line {
+      position: absolute;
+      left: 5%; right: 5%;
+      height: 2px;
+      background: linear-gradient(90deg, transparent, var(--green), transparent);
+      top: 50%;
+      transform: translateY(-50%);
+      animation: scanMove 2s ease-in-out infinite;
+      opacity: 0;
+    }
+    .scanning .scan-line { opacity: 1; }
+    @keyframes scanMove {
+      0%   { top: 20%; }
+      50%  { top: 80%; }
+      100% { top: 20%; }
+    }
+
+    /* result overlay */
+    .result-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.4s;
+      pointer-events: none;
+      text-align: center;
+      gap: 8px;
+    }
+    .result-overlay.show { opacity: 1; }
+    .result-overlay.granted { background: rgba(0,255,136,0.12); }
+    .result-overlay.denied  { background: rgba(255,51,85,0.12); }
+    .result-icon { font-size: 56px; }
+    .result-name {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: 2px;
+      font-family: var(--mono);
+    }
+    .result-overlay.granted .result-name { color: var(--green); }
+    .result-overlay.denied  .result-name { color: var(--red); }
+    .result-conf {
+      font-size: 13px;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
+
+    /* no-camera state */
+    .no-cam {
+      text-align: center;
+      color: var(--muted);
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+    }
+    .no-cam span { font-size: 40px; }
+
+    /* controls */
+    .controls {
+      padding: 18px 20px;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .btn {
+      flex: 1;
+      padding: 12px 20px;
+      border-radius: 10px;
+      border: none;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-family: 'Inter', sans-serif;
+      letter-spacing: 0.5px;
+    }
+    .btn:active { transform: scale(0.97); }
+    .btn-primary {
+      background: linear-gradient(135deg, #2979ff, #0052cc);
+      color: #fff;
+    }
+    .btn-primary:hover { filter: brightness(1.15); }
+    .btn-scan {
+      background: linear-gradient(135deg, #00ff88, #00cc6a);
+      color: #000;
+    }
+    .btn-scan:hover { filter: brightness(1.1); }
+    .btn-scan:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-stop {
+      background: rgba(255,51,85,0.15);
+      color: var(--red);
+      border: 1px solid rgba(255,51,85,0.3);
+    }
+    .btn-stop:hover { background: rgba(255,51,85,0.25); }
+
+    .auto-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+      cursor: pointer;
+      user-select: none;
+    }
+    .auto-toggle input { accent-color: var(--green); width: 16px; height: 16px; cursor: pointer; }
+
+    /* ── Right panel ── */
+    .right-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* status card */
+    .status-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+    }
+    .status-title {
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: var(--muted);
+      font-family: var(--mono);
+      margin-bottom: 16px;
+    }
+    .status-box {
+      border-radius: 12px;
+      padding: 20px;
+      text-align: center;
+      transition: all 0.4s;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      min-height: 120px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .status-box.granted {
+      background: rgba(0,255,136,0.07);
+      border-color: rgba(0,255,136,0.3);
+    }
+    .status-box.denied {
+      background: rgba(255,51,85,0.07);
+      border-color: rgba(255,51,85,0.3);
+    }
+    .status-box.scanning {
+      background: rgba(41,121,255,0.07);
+      border-color: rgba(41,121,255,0.3);
+    }
+    .status-emoji { font-size: 36px; }
+    .status-label {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: 3px;
+      font-family: var(--mono);
+    }
+    .status-box.granted .status-label { color: var(--green); }
+    .status-box.denied  .status-label { color: var(--red); }
+    .status-box.scanning .status-label { color: var(--blue); }
+    .status-detail { font-size: 13px; color: var(--muted); font-family: var(--mono); }
+
+    /* stats row */
+    .stats-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .stat-box {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      text-align: center;
+    }
+    .stat-val { font-size: 22px; font-weight: 700; font-family: var(--mono); color: var(--text); }
+    .stat-key { font-size: 10px; color: var(--muted); letter-spacing: 1px; margin-top: 2px; }
+    .stat-val.green { color: var(--green); }
+    .stat-val.red   { color: var(--red); }
+
+    /* history log */
+    .log-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px;
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .log-title {
+      font-size: 11px;
+      letter-spacing: 2px;
+      color: var(--muted);
+      font-family: var(--mono);
+      margin-bottom: 12px;
+    }
+    .log-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow-y: auto;
+      max-height: 300px;
+      flex: 1;
+    }
+    .log-list::-webkit-scrollbar { width: 4px; }
+    .log-list::-webkit-scrollbar-track { background: transparent; }
+    .log-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+    .log-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 12px;
+      font-family: var(--mono);
+      animation: fadeIn 0.3s ease;
+    }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
+    .log-item.granted { background: rgba(0,255,136,0.06); }
+    .log-item.denied  { background: rgba(255,51,85,0.06); }
+    .log-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .log-item.granted .log-dot { background: var(--green); }
+    .log-item.denied  .log-dot { background: var(--red); }
+    .log-name { flex: 1; color: var(--text); }
+    .log-conf { color: var(--muted); white-space: nowrap; }
+    .log-time { color: var(--muted); font-size: 10px; white-space: nowrap; }
+    .log-empty { color: var(--muted); font-size: 13px; text-align: center; padding: 24px 0; }
+
+    /* mode toggle */
+    .mode-toggle {
+      display: flex;
+      gap: 8px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .mode-btn {
+      flex: 1;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--muted);
+      font-size: 12px;
+      font-family: var(--mono);
+      cursor: pointer;
+      transition: all 0.2s;
+      letter-spacing: 1px;
+    }
+    .mode-btn.active {
+      background: rgba(41,121,255,0.15);
+      border-color: var(--blue);
+      color: var(--blue);
+    }
+    .mode-btn:hover:not(.active) { background: rgba(255,255,255,0.04); color: var(--text); }
+
+    #esp32Stream {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      display: none;
+    }
+
+    canvas { display: none; }
+
+    /* responsive */
+    @media (max-width: 768px) {
+      main { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-icon">🛡</div>
+    <div>
+      <div class="logo-text">SENTINEL V2</div>
+      <div class="logo-sub">GATE CONTROL SYSTEM</div>
+    </div>
+  </div>
+  <div class="header-badge">
+    <div class="pulse"></div>
+    <span id="headerStatus">CAMERA OFFLINE</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── Camera Card ── -->
+  <div class="camera-card">
+    <div class="camera-label">
+      <div class="pulse" id="camPulse" style="background:var(--muted)"></div>
+      BIOMETRIC CAMERA FEED — GATE A1
+    </div>
+    <!-- Source mode selector -->
+    <div class="mode-toggle">
+      <button class="mode-btn active" id="modePC"     onclick="switchMode('pc')">💻 PC WEBCAM</button>
+      <button class="mode-btn"        id="modeESP32"  onclick="switchMode('esp32')">📡 ESP32 STREAM</button>
+      <button class="mode-btn"        style="flex: 0.5; color: var(--red); border-color: rgba(239,68,68,0.3);" onclick="resetTickets()" title="Reset Anti-Passback for live demo">🔄 RESET</button>
+    </div>
+    <div class="camera-wrap" id="camWrap">
+      <div class="no-cam" id="noCam">
+        <span>📷</span>
+        Click "Start Camera" to begin
+      </div>
+      <video id="vid" autoplay playsinline muted style="display:none"></video>
+      <img   id="esp32Stream" alt="ESP32-CAM Stream" crossorigin="anonymous" />
+      <canvas id="rc"></canvas>
+      <div class="scan-frame" id="scanFrame" style="display:none">
+        <div class="corner tl"></div>
+        <div class="corner tr"></div>
+        <div class="corner bl"></div>
+        <div class="corner br"></div>
+        <div class="scan-line"></div>
+      </div>
+      <div class="result-overlay" id="resultOverlay">
+        <div class="result-icon" id="resultIcon"></div>
+        <div class="result-name" id="resultName"></div>
+        <div class="result-conf" id="resultConf"></div>
+      </div>
+    </div>
+    <div class="controls">
+      <button class="btn btn-primary" id="btnStart" onclick="startCamera()">▶ Start Camera</button>
+      <button class="btn btn-scan"    id="btnScan"  onclick="scanOnce()" disabled>🔍 Scan Now</button>
+      <button class="btn btn-stop"    id="btnStop"  onclick="stopCamera()" style="display:none">⏹ Stop</button>
+      <label class="auto-toggle">
+        <input type="checkbox" id="autoScan" onchange="toggleAuto()" /> Auto-scan
+      </label>
+    </div>
+  </div>
+
+  <!-- ── Right Panel ── -->
+  <div class="right-panel">
+
+    <!-- Status -->
+    <div class="status-card">
+      <div class="status-title">LAST SCAN RESULT</div>
+      <div class="status-box" id="statusBox">
+        <div class="status-emoji">🔒</div>
+        <div class="status-label">WAITING</div>
+        <div class="status-detail">No scan yet</div>
+      </div>
+      <div class="stats-row">
+        <div class="stat-box">
+          <div class="stat-val green" id="statGranted">0</div>
+          <div class="stat-key">GRANTED</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val red" id="statDenied">0</div>
+          <div class="stat-key">DENIED</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" id="statTotal">0</div>
+          <div class="stat-key">TOTAL SCANS</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" id="statConf">—</div>
+          <div class="stat-key">LAST CONF%</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="log-card">
+      <div class="log-title">SCAN HISTORY</div>
+      <ul class="log-list" id="logList">
+        <li class="log-empty" id="logEmpty">No scans yet</li>
+      </ul>
+    </div>
+
+  </div>
+
+</main>
+
+<script>
+  /* ── CONFIG ──────────────────────────────────────────────────────────────── */
+  const API_BASE       = window.location.hostname === 'localhost' ? 'http://localhost:8000' : 'http://127.0.0.1:8000';
+  const SENTINEL_KEY   = '';   // leave blank in dev mode
+  const ESP32_IP       = '192.168.43.178';
+  // Stream and health go through the FastAPI proxy to avoid CORS blocks
+  const ESP32_STREAM   = `${API_BASE}/esp32/stream`;
+  const ESP32_HEALTH   = `${API_BASE}/esp32/health`;
+
+  let stream     = null;
+  let autoTimer  = null;
+  let stats      = { granted: 0, denied: 0, total: 0 };
+  let scanning   = false;
+  let cameraMode = 'pc';   // 'pc' | 'esp32'
+
+  // ── Mode Toggle ───────────────────────────────────────────────────────────
+  function switchMode(mode) {
+    cameraMode = mode;
+    document.getElementById('modePC').classList.toggle('active',    mode === 'pc');
+    document.getElementById('modeESP32').classList.toggle('active', mode === 'esp32');
+    // If already running, restart in new mode
+    if (stream || document.getElementById('esp32Stream').style.display !== 'none') {
+      stopCamera();
+    }
+  }
+
+  // ── ESP32 Health (on load) ────────────────────────────────────────────────
+  async function checkEsp32() {
+    try {
+      const r = await fetch(ESP32_HEALTH);
+      const j = await r.json();
+      const label = j.status === 'online' ? `ESP32 ONLINE · ${j.esp32}` : 'ESP32 OFFLINE';
+      document.getElementById('headerStatus').textContent = label;
+    } catch {
+      document.getElementById('headerStatus').textContent = 'ESP32 OFFLINE';
+    }
+  }
+  checkEsp32();
+
+  // ── Camera ────────────────────────────────────────────────────────────────
+  async function startCamera() {
+    if (cameraMode === 'esp32') {
+      // ESP32 MJPEG stream — just point the img tag at it
+      const img = document.getElementById('esp32Stream');
+      img.src = ESP32_STREAM + '?t=' + Date.now();
+      img.style.display = 'block';
+      document.getElementById('noCam').style.display      = 'none';
+      document.getElementById('scanFrame').style.display  = 'block';
+      document.getElementById('btnStart').style.display   = 'none';
+      document.getElementById('btnStop').style.display    = 'block';
+      document.getElementById('btnScan').disabled         = false;
+      document.getElementById('camPulse').style.background = 'var(--green)';
+      document.getElementById('headerStatus').textContent  = 'ESP32 STREAM LIVE';
+      setStatus('scanning', '📡', 'READY', 'ESP32-CAM stream active');
+      return;
+    }
+    // PC webcam
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
+      });
+      const vid = document.getElementById('vid');
+      vid.srcObject = stream;
+      vid.style.display = 'block';
+      document.getElementById('noCam').style.display      = 'none';
+      document.getElementById('scanFrame').style.display  = 'block';
+      document.getElementById('btnStart').style.display   = 'none';
+      document.getElementById('btnStop').style.display    = 'block';
+      document.getElementById('btnScan').disabled         = false;
+      document.getElementById('camPulse').style.background = 'var(--green)';
+      document.getElementById('headerStatus').textContent  = 'CAMERA ONLINE';
+      setStatus('scanning', '📡', 'READY', 'Point face at camera');
+    } catch (e) {
+      alert('Camera access denied: ' + e.message);
+    }
+  }
+
+  function stopCamera() {
+    // Stop webcam
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = null;
+    // Stop ESP32 stream
+    const img = document.getElementById('esp32Stream');
+    img.src = '';
+    img.style.display = 'none';
+    // Reset UI
+    if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+    document.getElementById('autoScan').checked = false;
+    document.getElementById('vid').style.display       = 'none';
+    document.getElementById('noCam').style.display      = 'flex';
+    document.getElementById('scanFrame').style.display  = 'none';
+    document.getElementById('btnStart').style.display   = 'block';
+    document.getElementById('btnStop').style.display    = 'none';
+    document.getElementById('btnScan').disabled = true;
+    document.getElementById('camPulse').style.background = 'var(--muted)';
+    document.getElementById('headerStatus').textContent  = 'CAMERA OFFLINE';
+    setStatus('idle', '🔒', 'WAITING', 'No scan yet');
+    hideOverlay();
+  }
+
+  function toggleAuto() {
+    const checked = document.getElementById('autoScan').checked;
+    if (checked) {
+      autoTimer = setInterval(scanOnce, 2200);
+    } else {
+      clearInterval(autoTimer);
+      autoTimer = null;
+    }
+  }
+
+  // ── Admin Tools ───────────────────────────────────────────────────────────
+  async function resetTickets() {
+    if (!confirm("Admin Action: Reset all tickets?\n\nThis clears the anti-passback flag for all users so they can scan again.")) return;
+    try {
+      const res = await fetch(`${API_BASE}/reset_tickets`, { method: 'POST', headers: { 'X-Sentinel-Key': SENTINEL_KEY } });
+      const data = await res.json();
+      if (data.success) alert("Tickets reset successfully. Users can scan again.");
+      else alert("Error resetting tickets.");
+    } catch (e) {
+      alert("Failed to reach server: " + e.message);
+    }
+  }
+
+  // ── Capture & Match ───────────────────────────────────────────────────────
+  async function scanOnce() {
+    if (scanning) return;
+    const vid = document.getElementById('vid');
+    const esp = document.getElementById('esp32Stream');
+    const isEsp32 = cameraMode === 'esp32' && esp.style.display !== 'none';
+    const isPc    = cameraMode === 'pc'    && stream;
+    if (!isEsp32 && !isPc) return;
+    scanning = true;
+
+    const rc = document.getElementById('rc');
+
+    if (isEsp32) {
+      // Capture a frame from the live <img> MJPEG stream via canvas
+      rc.width  = esp.naturalWidth  || 640;
+      rc.height = esp.naturalHeight || 480;
+      const ctx = rc.getContext('2d');
+      ctx.drawImage(esp, 0, 0, rc.width, rc.height);
+    } else {
+      // PC webcam — mirror correction
+      rc.width  = vid.videoWidth  || 640;
+      rc.height = vid.videoHeight || 480;
+      const ctx = rc.getContext('2d');
+      ctx.save();
+      ctx.translate(rc.width, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(vid, 0, 0);
+      ctx.restore();
+    }
+
+    const imageData = rc.toDataURL('image/jpeg', 0.88);
+
+    // animate scan line
+    document.getElementById('camWrap').classList.add('scanning');
+    setStatus('scanning', '⏳', 'SCANNING', 'Analysing face...');
+
+    let result;
+    try {
+      const res = await fetch(`${API_BASE}/match`, {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Sentinel-Key': SENTINEL_KEY },
+        body   : JSON.stringify({ image_data: imageData }),
+      });
+      result = await res.json();
+    } catch (e) {
+      setStatus('idle', '⚠️', 'ERROR', e.message);
+      scanning = false;
+      document.getElementById('camWrap').classList.remove('scanning');
+      return;
+    }
+
+    document.getElementById('camWrap').classList.remove('scanning');
+    handleResult(result);
+    scanning = false;
+  }
+
+  function handleResult(result) {
+    stats.total++;
+    document.getElementById('statTotal').textContent = stats.total;
+    const conf = result.confidence != null ? result.confidence.toFixed(1) : '—';
+    document.getElementById('statConf').textContent = conf + (result.confidence != null ? '%' : '');
+
+    if (result.matched) {
+      stats.granted++;
+      const name = (result.name || 'UNKNOWN').toUpperCase();
+      document.getElementById('statGranted').textContent = stats.granted;
+      setStatus('granted', '✅', 'GRANTED', name + ' · ' + conf + '% match');
+      showOverlay('granted', '✅', name, conf + '% confidence');
+      addLog('granted', name, conf + '%');
+    } else {
+      stats.denied++;
+      document.getElementById('statDenied').textContent = stats.denied;
+      const reason = result.reason || 'ACCESS DENIED';
+      setStatus('denied', '🚫', 'DENIED', reason + ' · ' + conf + '%');
+      showOverlay('denied', '🚫', 'ACCESS DENIED', conf + '% confidence');
+      addLog('denied', 'UNKNOWN', conf + '%');
+    }
+
+    // Clear overlay after 2.5 s
+    setTimeout(hideOverlay, 2500);
+  }
+
+  // ── UI helpers ────────────────────────────────────────────────────────────
+  function setStatus(cls, emoji, label, detail) {
+    const box = document.getElementById('statusBox');
+    box.className = 'status-box ' + cls;
+    box.querySelector('.status-emoji').textContent  = emoji;
+    box.querySelector('.status-label').textContent  = label;
+    box.querySelector('.status-detail').textContent = detail;
+  }
+
+  function showOverlay(cls, icon, name, conf) {
+    const ov = document.getElementById('resultOverlay');
+    ov.className = 'result-overlay show ' + cls;
+    document.getElementById('resultIcon').textContent = icon;
+    document.getElementById('resultName').textContent = name;
+    document.getElementById('resultConf').textContent = conf;
+
+    // Flash corners
+    const corners = document.querySelectorAll('.corner');
+    const colour  = cls === 'granted' ? 'var(--green)' : 'var(--red)';
+    corners.forEach(c => { c.style.borderColor = colour; c.style.opacity = '1'; });
+  }
+
+  function hideOverlay() {
+    document.getElementById('resultOverlay').className = 'result-overlay';
+    const corners = document.querySelectorAll('.corner');
+    corners.forEach(c => { c.style.borderColor = 'var(--green)'; c.style.opacity = '0.7'; });
+  }
+
+  function addLog(cls, name, conf) {
+    const list = document.getElementById('logList');
+    document.getElementById('logEmpty')?.remove();
+
+    const now  = new Date();
+    const time = now.toTimeString().slice(0,8);
+
+    const li = document.createElement('li');
+    li.className = 'log-item ' + cls;
+    li.innerHTML = `
+      <div class="log-dot"></div>
+      <div class="log-name">${name}</div>
+      <div class="log-conf">${conf}</div>
+      <div class="log-time">${time}</div>`;
+    list.insertBefore(li, list.firstChild);
+
+    // Keep max 50 entries
+    while (list.children.length > 50) list.removeChild(list.lastChild);
+  }
+</script>
+
+</body>
+</html>
